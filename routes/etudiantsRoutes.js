@@ -106,26 +106,33 @@ if (!fs.existsSync(uploadFolderPath)) {
     fs.mkdirSync(uploadFolderPath);
 }
 
-// Multer disk storage configuration
+// Multer disk storage — saves to stockages/tmp/ first because req.body isn't
+// populated yet when destination() runs (multer parses the body itself).
+// The route handler moves files to stockages/{email}/ after email is known.
+const tmpFolder = path.join(uploadFolderPath, 'tmp');
+if (!fs.existsSync(tmpFolder)) fs.mkdirSync(tmpFolder, { recursive: true });
+
 const storage = multer.diskStorage({
     destination: function (req, file, cb) {
-        const studentEmail = req.body.email; // Get the student's email from the request body
-        const studentFolderPath = path.join(uploadFolderPath, studentEmail);
-
-        // Create a folder for the student if it doesn't exist
-        if (!fs.existsSync(studentFolderPath)) {
-            fs.mkdirSync(studentFolderPath);
-        }
-
-        cb(null, studentFolderPath); // Set the destination folder for uploaded files
+        cb(null, tmpFolder);
     },
     filename: function (req, file, cb) {
-        cb(null, Date.now() + '-' + file.originalname); // Generate unique filenames
+        cb(null, Date.now() + '-' + file.originalname);
     }
 });
 
-// Configure multer with the disk storage
-const upload = multer({ storage: multer.memoryStorage() });
+const upload = multer({ storage });
+
+// Move a file from tmp/ into stockages/{email}/ and return the new path.
+function moveToEmailFolder(file, email) {
+    const safeEmail = email.replace(/[^a-zA-Z0-9@._-]/g, '_');
+    const destDir   = path.join(uploadFolderPath, safeEmail);
+    if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
+    const destPath  = path.join(destDir, path.basename(file.path));
+    fs.renameSync(file.path, destPath);
+    file.path = destPath;
+    return file;
+}
 
 
 
@@ -154,15 +161,11 @@ function initializeDriveClient() {
 
 
 async function uploadFileToDrive(driveClient, fileObject, fileName) {
-
-/*   console.log('Uploading file:', fileName);
-  console.log('File size:', fileObject.size);
-  console.log('File mimetype:', fileObject.mimetype); */
-
   return new Promise((resolve, reject) => {
-    const fileStream = new Readable();
-    fileStream.push(fileObject.buffer);
-    fileStream.push(null);
+    // Support both memoryStorage (buffer) and diskStorage (path)
+    const fileStream = fileObject.buffer
+      ? (() => { const s = new Readable(); s.push(fileObject.buffer); s.push(null); return s; })()
+      : fs.createReadStream(fileObject.path);
 
     const media = {
       mimeType: fileObject.mimetype,
@@ -201,7 +204,8 @@ router.post('/postulates/:id', upload.fields([
     t = await sequelize.transaction();
 
     const id = req.params.id;
-    const driveClient = initializeDriveClient();
+    let driveClient = null;
+    try { driveClient = initializeDriveClient(); } catch (e) { /* no credentials — local fallback */ }
 
     // Extract form data from request body
     const {
@@ -226,15 +230,29 @@ router.post('/postulates/:id', upload.fields([
       duree_stage
     } = req.body;
 
- 
+    // Move uploaded files from tmp/ into stockages/{email}/ now that email is known
+    if (req.files) {
+      Object.values(req.files).forEach(arr => arr.forEach(f => moveToEmailFolder(f, email)));
+    }
 
-    // Extract file paths from request files
-/*     const cvPath = req.files['cv'] ? req.files['cv'][0].path : null;
-    const lettrePath = req.files['lettre_motivation'] ? req.files['lettre_motivation'][0].path : null;
-    const relevesPath = req.files['releves_notes'] ? req.files['releves_notes'][0].path : null; */
-    const cvFile = req.files['cv'] ? await uploadFileToDrive(driveClient, req.files['cv'][0], `CV_${email}_${Date.now()}`) : null;
-    const lettreFile = req.files['lettre_motivation'] ? await uploadFileToDrive(driveClient, req.files['lettre_motivation'][0], `LM_${email}_${Date.now()}`) : null;
-    const relevesFile = req.files['releves_notes'] ? await uploadFileToDrive(driveClient, req.files['releves_notes'][0], `RN_${email}_${Date.now()}`) : null;
+    // Upload to Drive; fall back to local path when Drive is unavailable
+    async function saveFile(fileArr, prefix) {
+      if (!fileArr || !fileArr[0]) return null;
+      const f = fileArr[0];
+      const localUrl = '/stockages/' + encodeURIComponent(email) + '/' + path.basename(f.path);
+      if (!driveClient) return localUrl;
+      try {
+        const result = await uploadFileToDrive(driveClient, f, `${prefix}_${email}_${Date.now()}`);
+        return result.webViewLink || localUrl;
+      } catch (driveErr) {
+        console.warn('Drive upload failed, using local storage:', driveErr.message);
+        return localUrl;
+      }
+    }
+
+    const cvUrl      = await saveFile(req.files['cv'],               'CV');
+    const lettreUrl  = await saveFile(req.files['lettre_motivation'], 'LM');
+    const relevesUrl = await saveFile(req.files['releves_notes'],     'RN');
     
 
 
@@ -267,9 +285,9 @@ router.post('/postulates/:id', upload.fields([
       langues: langues || null,
       logiciels: logiciels || null,
       competences_autres: competences_autres || null,
-      cv_url: cvFile ? cvFile.webViewLink : null,
-      lettre_motivation_url: lettreFile ? lettreFile.webViewLink : null,
-      releves_notes_url: relevesFile ? relevesFile.webViewLink : null,
+      cv_url: cvUrl,
+      lettre_motivation_url: lettreUrl,
+      releves_notes_url: relevesUrl,
     }, { transaction: t });
 
     // Retrieve or determine etudiantID
@@ -323,9 +341,9 @@ router.post('/postulates/:id', upload.fields([
           etudiant_email: email,
           etudiant_departement: domaine_etudes || null,
           etudiant_specialite: section || null,
-          cv_path: cvFile ? cvFile.webViewLink : null,
-          lettre_motivation_path: lettreFile ? lettreFile.webViewLink : null,
-          releves_notes_path: relevesFile ? relevesFile.webViewLink : null,
+          cv_path: cvUrl,
+          lettre_motivation_path: lettreUrl,
+          releves_notes_path: relevesUrl,
           motivation_letter: motivation || null,
         });
       }
@@ -357,7 +375,8 @@ router.post('/postulates/:id', upload.fields([
 ]), async (req, res) => {
     const t = await sequelize.transaction();
     const id = req.params.id;
-    const driveClient = initializeDriveClient();
+    let driveClient = null;
+    try { driveClient = initializeDriveClient(); } catch (e) { /* no credentials — local fallback */ }
 
     try {
         // Get the form data
@@ -383,14 +402,28 @@ router.post('/postulates/:id', upload.fields([
             duree_stage
         } = req.body;
 
+        // Move uploaded files from tmp/ into stockages/{email}/ now that email is known
+        if (req.files) {
+          Object.values(req.files).forEach(arr => arr.forEach(f => moveToEmailFolder(f, email)));
+        }
 
-        // Get the file paths
-/*         const cvPath = req.files['cv'] ? req.files['cv'][0].path : null;
-        const lettrePath = req.files['lettre_motivation'] ? req.files['lettre_motivation'][0].path : null;
-        const relevesPath = req.files['releves_notes'] ? req.files['releves_notes'][0].path : null; */
-        const cvFile = req.files['cv'] ? await uploadFileToDrive(driveClient, req.files['cv'][0], `CV_${email}_${Date.now()}`) : null;
-        const lettreFile = req.files['lettre_motivation'] ? await uploadFileToDrive(driveClient, req.files['lettre_motivation'][0], `LM_${email}_${Date.now()}`) : null;
-        const relevesFile = req.files['releves_notes'] ? await uploadFileToDrive(driveClient, req.files['releves_notes'][0], `RN_${email}_${Date.now()}`) : null;
+        // Upload to Drive; fall back to local path when Drive is unavailable
+        async function saveFile2(fileArr, prefix) {
+          if (!fileArr || !fileArr[0]) return null;
+          const f = fileArr[0];
+          const localUrl = '/stockages/' + encodeURIComponent(email) + '/' + path.basename(f.path);
+          if (!driveClient) return localUrl;
+          try {
+            const result = await uploadFileToDrive(driveClient, f, `${prefix}_${email}_${Date.now()}`);
+            return result.webViewLink || localUrl;
+          } catch (driveErr) {
+            console.warn('Drive upload failed, using local storage:', driveErr.message);
+            return localUrl;
+          }
+        }
+        const cvUrl2      = await saveFile2(req.files['cv'],               'CV');
+        const lettreUrl2  = await saveFile2(req.files['lettre_motivation'], 'LM');
+        const relevesUrl2 = await saveFile2(req.files['releves_notes'],     'RN');
     
     
 
@@ -428,9 +461,9 @@ router.post('/postulates/:id', upload.fields([
             competences_autres,
             date_debut,
             duree_stage,
-            cv: cvFile ? cvFile.webViewLink : null,
-           lettre_motivation: lettreFile ? lettreFile.webViewLink : null,
-           releves_notes: relevesFile ? relevesFile.webViewLink : null
+            cv: cvUrl2,
+            lettre_motivation: lettreUrl2,
+            releves_notes: relevesUrl2
         }, { transaction: t });
 
         let etudiantID;

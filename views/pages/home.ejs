@@ -9,233 +9,283 @@
   <div class="main-area" id="mainArea">
     <%- include('../layouts/navbar') %>
     <main class="page-content">
-      <h3 class="mb-3">Accueil</h3>
-      <hr>
+      <h3 class="mb-1">Offres de stages</h3>
+      <p class="text-muted mb-4" style="font-size:.9rem;">Découvrez et postulez aux meilleures opportunités</p>
 
-      <div class="container-fluid px-0">
-        <form id="searchFilterForm" class="mb-4">
-          <div class="row g-3">
+      <!-- Search & Filter Panel -->
+      <div class="search-panel">
+        <div class="search-panel-title">
+          <i class="bi bi-funnel" style="color:var(--accent)"></i> Filtrer les offres
+        </div>
+        <form id="searchFilterForm">
+          <div class="row g-3 align-items-end">
             <div class="col-md-3">
-              <input type="text" class="form-control" id="searchInput" placeholder="Rechercher des stages...">
+              <label class="form-label">Recherche</label>
+              <input type="text" class="form-control" id="searchInput" placeholder="Titre, domaine, entreprise…">
             </div>
             <div class="col-md-2">
+              <label class="form-label">Domaine</label>
               <select class="form-select" id="domainFilter">
-                <option value="">Tous les domaines</option>
+                <option value="">Tous</option>
               </select>
             </div>
             <div class="col-md-2">
+              <label class="form-label">Niveau</label>
               <select class="form-select" id="experienceFilter">
-                <option value="">Tous les niveaux</option>
+                <option value="">Tous</option>
               </select>
             </div>
             <div class="col-md-2">
+              <label class="form-label">Ville</label>
               <select class="form-select" id="stateFilter">
-                <option value="">Toutes les villes</option>
+                <option value="">Toutes</option>
               </select>
             </div>
-            <div class="col-md-2">
+            <div class="col-md-3">
               <button type="submit" class="btn btn-primary w-100">
                 <i class="bi bi-search"></i> Rechercher
               </button>
             </div>
           </div>
         </form>
+      </div>
 
-        <div class="d-flex justify-content-end mb-3">
-          <select class="form-select" id="sortSelect" style="width:auto;">
+      <!-- Toolbar -->
+      <div class="d-flex justify-content-between align-items-center mb-3">
+        <span id="resultCount" class="text-muted" style="font-size:.85rem;"></span>
+        <div class="d-flex align-items-center gap-2">
+          <label class="form-label mb-0 text-muted" style="font-size:.82rem;white-space:nowrap;">Trier par</label>
+          <select class="form-select form-select-sm" id="sortSelect" style="width:auto;min-width:160px;">
             <option value="dateDesc">Plus récents</option>
             <option value="dateAsc">Plus anciens</option>
             <option value="titleAsc">Titre A-Z</option>
             <option value="titleDesc">Titre Z-A</option>
           </select>
         </div>
-
-        <div id="jobListings"></div>
-
-        <nav aria-label="Pagination" class="mt-4">
-          <ul class="pagination justify-content-center" id="pagination"></ul>
-        </nav>
       </div>
+
+      <div id="jobListings"></div>
+
+      <nav aria-label="Pagination" class="mt-4">
+        <ul class="pagination justify-content-center" id="pagination"></ul>
+      </nav>
     </main>
     <%- include('../layouts/footer') %>
   </div>
 </div>
 <%- include('../layouts/scripts') %>
 <script>
-$(document).ready(function() {
-  let currentPage = 1;
-  const groupsPerPage = 5;
-  // Data injected server-side — no fetch needed
-  let jobData = <%- JSON.stringify(stages) %>;
-  let filteredJobData = [...jobData];
+(function() {
+  'use strict';
 
-  populateFilters();
-  updateJobListings();
+  const GROUPS_PER_PAGE = 5;
+  const ACCENT_COLORS = ['#E8621A','#2D8A7A','#7A4F9A','#1A4A7A','#6A8A2A','#8A2A3A'];
 
-  function populateFilters() {
-    const domains     = [...new Set(jobData.map(j => j.Domaine))];
-    const experiences = [...new Set(jobData.map(j => j.Niveau))];
-    const states      = [...new Set(jobData.map(j => j.Address))];
-    populateDropdown('#domainFilter',     domains,     'Tous les domaines');
-    populateDropdown('#experienceFilter', experiences, 'Tous les niveaux');
-    populateDropdown('#stateFilter',      states,      'Toutes les villes');
+  let jobData        = <%- JSON.stringify(stages) %>;
+  let filteredData   = [...jobData];
+  let currentPage    = 1;
+  let domainColorMap = {};
+
+  function getDomainColor(domain) {
+    if (!domainColorMap[domain]) {
+      const keys = Object.keys(domainColorMap);
+      domainColorMap[domain] = ACCENT_COLORS[keys.length % ACCENT_COLORS.length];
+    }
+    return domainColorMap[domain];
   }
 
-  function populateDropdown(sel, opts, def) {
-    const $d = $(sel).empty().append(`<option value="">${def}</option>`);
-    opts.forEach(o => $d.append(`<option value="${o}">${o}</option>`));
+  function timeAgo(dateStr) {
+    if (!dateStr) return '';
+    const diff = Date.now() - new Date(dateStr).getTime();
+    const days = Math.floor(diff / 86400000);
+    if (days === 0) return "Aujourd'hui";
+    if (days === 1) return 'Hier';
+    if (days < 7)  return `Il y a ${days} jours`;
+    if (days < 30) return `Il y a ${Math.floor(days/7)} sem.`;
+    return `Il y a ${Math.floor(days/30)} mois`;
   }
 
-  function updateJobListings() {
+  function formatDate(d) {
+    if (!d) return '—';
+    return new Date(d).toLocaleDateString('fr-FR', { day:'2-digit', month:'short', year:'numeric' });
+  }
+
+  function companyInitial(name) {
+    return (name || '?').trim().charAt(0).toUpperCase();
+  }
+
+  function createJobCard(job, color) {
+    const initial = companyInitial(job.Nom);
+    return `
+      <div class="job-card h-100">
+        <div class="card-accent-bar" style="background:${color}"></div>
+        <div class="card-body">
+          <div class="d-flex align-items-start gap-3 mb-3">
+            <div class="company-badge flex-shrink-0" style="background:${color}">${initial}</div>
+            <div style="min-width:0">
+              <h5 class="card-title mb-0">${job.Titre || '—'}</h5>
+              <p class="mb-0" style="font-size:.82rem;color:var(--text-muted);margin-top:2px;">
+                <i class="bi bi-building me-1"></i>${job.Nom || '—'}
+              </p>
+            </div>
+          </div>
+
+          <div class="d-flex flex-wrap gap-1 mb-3">
+            ${job.Domaine ? `<span class="badge" style="background:${color}22;color:${color};border:1px solid ${color}44;">${job.Domaine}</span>` : ''}
+            ${job.Niveau  ? `<span class="badge badge-muted">${job.Niveau}</span>` : ''}
+            ${job.Experience ? `<span class="badge badge-muted">${job.Experience}</span>` : ''}
+          </div>
+
+          <div class="mb-2" style="font-size:.82rem;color:var(--text-muted);line-height:1.7;">
+            ${job.Address ? `<div><i class="bi bi-geo-alt me-1" style="color:${color}"></i>${job.Address}</div>` : ''}
+            <div><i class="bi bi-calendar-range me-1" style="color:${color}"></i>${formatDate(job.DateDebut)} — ${formatDate(job.DateFin)}</div>
+            <div><i class="bi bi-people me-1" style="color:${color}"></i>${job.PostesVacants || 1} poste(s) vacant(s)</div>
+          </div>
+
+          <a href="/etudiant/postulate/${job.id}" class="btn btn-primary btn-sm mt-auto" style="background:${color};border-color:${color}">
+            <i class="bi bi-send me-1"></i>Postuler <i class="bi bi-arrow-right"></i>
+          </a>
+        </div>
+        <div class="card-footer">
+          <i class="bi bi-clock me-1"></i>${timeAgo(job.DateDebut || job.created_at)}
+        </div>
+      </div>`;
+  }
+
+  function groupByDomain(jobs) {
+    return jobs.reduce((acc, j) => {
+      const d = j.Domaine || 'Autre';
+      if (!acc[d]) acc[d] = [];
+      acc[d].push(j);
+      return acc;
+    }, {});
+  }
+
+  function render() {
     const $list = $('#jobListings').empty();
-    const grouped = groupJobsByDomain(filteredJobData);
-    const keys    = Object.keys(grouped);
-    const start   = (currentPage - 1) * groupsPerPage;
-    const end     = Math.min(start + groupsPerPage, keys.length);
+    const grouped = groupByDomain(filteredData);
+    const keys  = Object.keys(grouped);
+    const start = (currentPage - 1) * GROUPS_PER_PAGE;
+    const end   = Math.min(start + GROUPS_PER_PAGE, keys.length);
+
+    if (keys.length === 0) {
+      $list.html('<p class="text-muted text-center py-5"><i class="bi bi-inbox fs-3 d-block mb-2"></i>Aucune offre trouvée.</p>');
+      $('#resultCount').text('0 résultat');
+      renderPagination(0);
+      return;
+    }
+
+    $('#resultCount').text(`${filteredData.length} offre(s) · ${keys.length} domaine(s)`);
 
     for (let i = start; i < end; i++) {
       const domain = keys[i];
       const jobs   = grouped[domain];
-      const $sec   = $('<div class="mb-4">');
-      $sec.append(`<hr><h5 class="text-primary mb-3"><a href="/search?q=${encodeURIComponent(domain)}">${domain}</a></h5>`);
+      const color  = getDomainColor(domain);
+      const $sec   = $('<div class="mb-5">');
+      $sec.append(`
+        <div class="d-flex align-items-center gap-2 mb-3">
+          <div style="width:14px;height:14px;border-radius:3px;background:${color};flex-shrink:0"></div>
+          <h5 class="mb-0" style="font-family:var(--font-display);font-size:1.05rem;">
+            <a href="/search?q=${encodeURIComponent(domain)}" style="color:var(--text);">${domain}</a>
+          </h5>
+          <span class="badge badge-muted">${jobs.length}</span>
+        </div>`);
       const $row = $('<div class="row g-3">');
-      jobs.forEach(job => {
-        const $col = $('<div class="col-md-4">');
-        $col.append(createJobCard(job));
+      jobs.forEach((job, idx) => {
+        const $col = $('<div class="col-md-4">').css('animation-delay', (idx * 0.06) + 's');
+        $col.append(createJobCard(job, color));
         $row.append($col);
       });
       $sec.append($row);
       $list.append($sec);
     }
-    updatePagination(keys.length);
+
+    renderPagination(keys.length);
   }
 
-  function groupJobsByDomain(jobs) {
-    return jobs.reduce((acc, job) => {
-      if (!acc[job.Domaine]) acc[job.Domaine] = [];
-      acc[job.Domaine].push(job);
-      return acc;
-    }, {});
-  }
-
-  function createJobCard(job) {
-    return $(`
-      <div class="card h-100">
-        <div class="card-body d-flex flex-column">
-          <h6 class="card-title"><i class="bi bi-briefcase me-1"></i>${job.Titre}</h6>
-          <p class="card-text text-muted small mb-1"><i class="bi bi-building me-1"></i>${job.Nom}</p>
-          <p class="card-text text-muted small mb-1"><i class="bi bi-geo-alt me-1"></i>${job.Address}</p>
-          <p class="card-text text-muted small mb-1"><i class="bi bi-calendar me-1"></i>${new Date(job.DateDebut).toLocaleDateString('fr-FR')} — ${new Date(job.DateFin).toLocaleDateString('fr-FR')}</p>
-          <p class="card-text text-muted small mb-1"><i class="bi bi-person-workspace me-1"></i>${job.Experience} | ${job.Niveau}</p>
-          <p class="card-text text-muted small mb-2"><i class="bi bi-people me-1"></i>${job.PostesVacants} poste(s)</p>
-          <a href="/etudiant/postulate/${job.id}" class="btn btn-primary btn-sm mt-auto">
-            <i class="bi bi-send me-1"></i>Postuler
-          </a>
-        </div>
-      </div>`);
-  }
-
-  function updatePagination(total) {
-    const totalPages = Math.ceil(total / groupsPerPage);
+  function renderPagination(total) {
+    const totalPages = Math.ceil(total / GROUPS_PER_PAGE);
     const $pag = $('#pagination').empty();
+    if (totalPages <= 1) return;
+
     $pag.append(`<li class="page-item ${currentPage===1?'disabled':''}"><a class="page-link" href="#" aria-label="Précédent">&laquo;</a></li>`);
     for (let i = 1; i <= totalPages; i++) {
-      if (i===1||i===totalPages||(i>=currentPage-2&&i<=currentPage+2)) {
+      if (i===1 || i===totalPages || (i>=currentPage-2 && i<=currentPage+2)) {
         $pag.append(`<li class="page-item ${i===currentPage?'active':''}"><a class="page-link" href="#">${i}</a></li>`);
-      } else if (i===currentPage-3||i===currentPage+3) {
+      } else if (i===currentPage-3 || i===currentPage+3) {
         $pag.append(`<li class="page-item disabled"><a class="page-link" href="#">…</a></li>`);
       }
     }
     $pag.append(`<li class="page-item ${currentPage===totalPages?'disabled':''}"><a class="page-link" href="#" aria-label="Suivant">&raquo;</a></li>`);
   }
 
-  $(document).on('click', '.pagination .page-link', function(e) {
-    e.preventDefault();
-    const $item = $(this).closest('.page-item');
-    if ($item.hasClass('disabled')||$item.hasClass('active')) return;
-    const label = $(this).attr('aria-label');
-    if (label==='Précédent') currentPage--;
-    else if (label==='Suivant') currentPage++;
-    else currentPage = parseInt($(this).text());
-    updateJobListings();
-  });
-
-  $('#searchFilterForm').on('submit', function(e) { e.preventDefault(); applyFilters(); });
-  $('#sortSelect').on('change', applyFilters);
+  function populateFilters() {
+    const domains     = [...new Set(jobData.map(j => j.Domaine).filter(Boolean))].sort();
+    const experiences = [...new Set(jobData.map(j => j.Niveau).filter(Boolean))].sort();
+    const states      = [...new Set(jobData.map(j => j.Address).filter(Boolean))].sort();
+    const fill = (sel, opts) => {
+      const $s = $(sel);
+      const val = $s.val();
+      $s.find('option:not(:first)').remove();
+      opts.forEach(o => $s.append(`<option value="${o}">${o}</option>`));
+      if (val) $s.val(val);
+    };
+    fill('#domainFilter',     domains);
+    fill('#experienceFilter', experiences);
+    fill('#stateFilter',      states);
+  }
 
   function applyFilters() {
-    const q   = $('#searchInput').val().toLowerCase();
+    const q   = $('#searchInput').val().toLowerCase().trim();
     const dom = $('#domainFilter').val();
     const exp = $('#experienceFilter').val();
     const st  = $('#stateFilter').val();
     const srt = $('#sortSelect').val();
     const fields = ['Titre','Domaine','Experience','State','Address','Niveau','Libelle','Nom','Description'];
-    filteredJobData = jobData.filter(job => {
-      const match = fields.some(f => job[f] && job[f].toLowerCase().includes(q));
-      return match && (!dom||job.Domaine===dom) && (!exp||job.Niveau===exp) && (!st||job.Address===st);
-    });
-    sortJobData(srt);
-    currentPage = 1;
-    updateJobListings();
-  }
 
-  function sortJobData(opt) {
-    filteredJobData.sort((a,b) => {
-      switch(opt) {
-        case 'dateDesc': return new Date(b.DateDebut)-new Date(a.DateDebut);
-        case 'dateAsc':  return new Date(a.DateDebut)-new Date(b.DateDebut);
-        case 'titleAsc': return a.Titre.localeCompare(b.Titre);
-        case 'titleDesc':return b.Titre.localeCompare(a.Titre);
+    filteredData = jobData.filter(job => {
+      if (q && !fields.some(f => job[f] && job[f].toLowerCase().includes(q))) return false;
+      if (dom && job.Domaine !== dom) return false;
+      if (exp && job.Niveau  !== exp) return false;
+      if (st  && job.Address !== st)  return false;
+      return true;
+    });
+
+    filteredData.sort((a, b) => {
+      switch (srt) {
+        case 'dateDesc': return new Date(b.DateDebut) - new Date(a.DateDebut);
+        case 'dateAsc':  return new Date(a.DateDebut) - new Date(b.DateDebut);
+        case 'titleAsc': return (a.Titre||'').localeCompare(b.Titre||'');
+        case 'titleDesc':return (b.Titre||'').localeCompare(a.Titre||'');
         default: return 0;
       }
     });
+
+    currentPage = 1;
+    render();
   }
 
-  updateJobListings();
+  $(document).ready(function() {
+    populateFilters();
+    render();
 
-  $(document).on('click', '.pagination .page-link', function(e) {
-    e.preventDefault();
-    const $item = $(this).closest('.page-item');
-    if ($item.hasClass('disabled')||$item.hasClass('active')) return;
-    const label = $(this).attr('aria-label');
-    if (label==='Précédent') currentPage--;
-    else if (label==='Suivant') currentPage++;
-    else currentPage = parseInt($(this).text());
-    updateJobListings();
+    $('#searchFilterForm').on('submit', function(e) { e.preventDefault(); applyFilters(); });
+    $('#sortSelect').on('change', applyFilters);
+    $('#searchInput').on('input', applyFilters);
+
+    $(document).on('click', '#pagination .page-link', function(e) {
+      e.preventDefault();
+      const $item = $(this).closest('.page-item');
+      if ($item.hasClass('disabled') || $item.hasClass('active')) return;
+      const label = $(this).attr('aria-label');
+      if      (label === 'Précédent') currentPage = Math.max(1, currentPage - 1);
+      else if (label === 'Suivant')   currentPage++;
+      else currentPage = parseInt($(this).text(), 10);
+      render();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
   });
-
-  $('#searchFilterForm').on('submit', function(e) { e.preventDefault(); applyFilters(); });
-  $('#sortSelect').on('change', applyFilters);
-
-  function applyFilters() {
-    const q   = $('#searchInput').val().toLowerCase();
-    const dom = $('#domainFilter').val();
-    const exp = $('#experienceFilter').val();
-    const st  = $('#stateFilter').val();
-    const srt = $('#sortSelect').val();
-    const fields = ['Titre','Domaine','Experience','State','Address','Niveau','Libelle','Nom','Description'];
-    filteredJobData = jobData.filter(job => {
-      const match = fields.some(f => job[f] && job[f].toLowerCase().includes(q));
-      return match && (!dom||job.Domaine===dom) && (!exp||job.Niveau===exp) && (!st||job.Address===st);
-    });
-    sortJobData(srt);
-    currentPage = 1;
-    updateJobListings();
-  }
-
-  function sortJobData(opt) {
-    filteredJobData.sort((a,b) => {
-      switch(opt) {
-        case 'dateDesc': return new Date(b.DateDebut)-new Date(a.DateDebut);
-        case 'dateAsc':  return new Date(a.DateDebut)-new Date(b.DateDebut);
-        case 'titleAsc': return a.Titre.localeCompare(b.Titre);
-        case 'titleDesc':return b.Titre.localeCompare(a.Titre);
-        default: return 0;
-      }
-    });
-  }
-
-});
+})();
 </script>
 </body>
 </html>
