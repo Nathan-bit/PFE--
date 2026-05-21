@@ -17,6 +17,15 @@ services:
       retries: 20
       start_period: 30s
 
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+
   app:
     build: .
     ports:
@@ -29,3 +38,4 @@ services:
 
 volumes:
   mysql_data:
+  redis_data:

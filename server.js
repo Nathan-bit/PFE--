@@ -13,8 +13,10 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const cookieParser = require('cookie-parser');
 const flash = require('connect-flash');
+const session = require('express-session');
+const { RedisStore } = require('connect-redis');
+const Redis = require('ioredis');
 
-const routes = require('./routes/routes');
 const connectionRoutes = require('./routes/connectionRoutes');
 const uploadsRoutes = require('./routes/uploadsRoutes');
 const databaseRoutes = require('./routes/databaseRoutes');
@@ -100,13 +102,20 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 app.use('/stockages', express.static(path.join(__dirname, 'stockages')));
 
-app.use(
-    require('express-session')({
-        secret: process.env.secretKey,
-        resave: false,
-        saveUninitialized: false,
-    })
-);
+const redisClient = new Redis({
+    host: process.env.REDIS_HOST || 'localhost',
+    port: parseInt(process.env.REDIS_PORT, 10) || 6379,
+    lazyConnect: true,
+});
+redisClient.on('error', err => logger.warn('Redis unavailable, falling back to memory store:', err.message));
+
+app.use(session({
+    store: new RedisStore({ client: redisClient }),
+    secret: process.env.secretKey,
+    resave: false,
+    saveUninitialized: false,
+    cookie: { maxAge: 86400000 },
+}));
 
 app.use((req, res, next) => {
     res.locals.messages = req.flash();
@@ -121,7 +130,6 @@ app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 
 // ── Routes ────────────────────────────────────────────────────────────────────
-app.use('/people', authenticate, routes);
 app.use('/connection', connectionLimiter, connectionRoutes);
 app.use('/etudiant', authenticate, checkRole(['USER', 'ENTREPRISE', 'ADMIN', 'DEPARTEMENT']), etudiantsRoutes);
 app.use('/entreprise', authenticate, checkRole(['ENTREPRISE', 'DEPARTEMENT', 'ADMIN']), entrepriseRoutes);
